@@ -1,0 +1,35 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.6'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          cd sala_cccd_nfc_app
+          flutter pub get
+
+      - name: Build iOS App (.ipa)
+        run: |
+          cd sala_cccd_nfc_app
+          flutter build ios --no-codesign
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build
+          path: sala_cccd_nfc_app/build/ios/iphoneos/Runner.app
