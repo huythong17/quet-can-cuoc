@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-ios:
     runs-on: macos-latest
@@ -19,17 +22,21 @@ jobs:
           cache: true
 
       - name: Install dependencies
-        run: |
-          cd sala_cccd_nfc_app
-          flutter pub get
+        run: flutter pub get
 
-      - name: Build iOS App (.ipa)
-        run: |
-          cd sala_cccd_nfc_app
-          flutter build ios --no-codesign
+      - name: Build iOS App
+        run: flutter build ios --no-codesign
 
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+      - name: Zip iOS App
+        run: |
+          cd build/ios/iphoneos
+          zip -r ../../../QuetCanCuoc_iOS.zip Runner.app
+
+      - name: Create Release and Upload iOS File
+        uses: softprops/action-gh-release@v2
         with:
-          name: ios-build
-          path: sala_cccd_nfc_app/build/ios/iphoneos/Runner.app
+          tag_name: v2.0.7
+          name: App Quét Căn Cước v2.0.7
+          files: QuetCanCuoc_iOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
