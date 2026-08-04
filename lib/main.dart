@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:pointycastle/export.dart' as pc;
 import 'package:cccd_vietnam/dmrtd.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'settings_page.dart';
 void main() {
@@ -173,6 +174,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
     final nfc = NfcProvider();
     try {
+      HapticFeedback.lightImpact();
+
       int dobY = int.parse(_mrzDob.substring(0, 2));
       int dobM = int.parse(_mrzDob.substring(2, 4));
       int dobD = int.parse(_mrzDob.substring(4, 6));
@@ -180,9 +183,8 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
 
       List<String> expCandidates = [];
       if (_mrzExpiry.isNotEmpty) {
-        expCandidates.add(_mrzExpiry); // format: YYMMDD
+        expCandidates.add(_mrzExpiry); // 1st priority: Exact Expiry date from QR
       }
-      // Tự sinh các ngày hết hạn dự kiến theo luật Việt Nam (25, 40, 60 tuổi)
       if (_mrzDob.length == 6) {
         try {
           int yy = int.parse(_mrzDob.substring(0, 2));
@@ -190,11 +192,11 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
           int fullBirthYear = (yy > 35 ? 1900 : 2000) + yy;
           for (int expAge in [25, 40, 60]) {
             int eYear = (fullBirthYear + expAge) % 100;
-            expCandidates.add('${eYear.toString().padLeft(2, '0')}$mmdd');
+            String candExp = '${eYear.toString().padLeft(2, '0')}$mmdd';
+            if (!expCandidates.contains(candExp)) expCandidates.add(candExp);
           }
         } catch (_) {}
       }
-      expCandidates = expCandidates.toSet().toList();
       
       List<DateTime> dtExpCandidates = expCandidates.map((expStr) {
         int eY = int.parse(expStr.substring(0, 2));
@@ -203,23 +205,28 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
         return DateTime(2000 + eY, eM, eD);
       }).toList();
 
+      // Standard Vietnam CCCD MRZ key uses last 9 digits of 12-digit number
       List<String> docNumCandidates = [];
       if (_mrzDocNum.isNotEmpty) {
         if (_mrzDocNum.length == 12) {
-          docNumCandidates.add(_mrzDocNum.substring(3, 12)); // Last 9 digits (Standard for VN CCCD MRZ)
-        }
-        docNumCandidates.add(_mrzDocNum); // Full 12 digits
-        if (_mrzDocNum.length >= 9) {
-          docNumCandidates.add(_mrzDocNum.substring(0, 9)); // First 9 digits
+          docNumCandidates.add(_mrzDocNum.substring(3, 12)); // 1st priority: Last 9 digits (Standard VN CCCD)
+          docNumCandidates.add(_mrzDocNum.substring(6, 12)); // 2nd priority: CAN 6-digit
+          docNumCandidates.add(_mrzDocNum);                  // 3rd priority: Full 12 digits
+        } else if (_mrzDocNum.length >= 9) {
+          docNumCandidates.add(_mrzDocNum.substring(0, 9));
+          docNumCandidates.add(_mrzDocNum);
+        } else {
+          docNumCandidates.add(_mrzDocNum);
         }
       }
       docNumCandidates = docNumCandidates.toSet().toList();
-      if (docNumCandidates.isEmpty) throw Exception("Không có thông tin số CCCD từ mã QR.");
+      if (docNumCandidates.isEmpty) throw Exception("Không tìm thấy thông tin số CCCD từ mã QR.");
 
-      await nfc.connect(iosAlertMessage: "Chạm thẻ CCCD vào lưng thiết bị");
+      await nfc.connect(iosAlertMessage: "Áp thẻ CCCD vào lưng điện thoại và giữ yên");
+      HapticFeedback.mediumImpact();
       
       setState(() {
-        _nfcStatus = '✅ ĐÃ KẾT NỐI NFC!\n\n📥 Đang thực hiện xác thực PACE...';
+        _nfcStatus = '✅ ĐÃ KẾT NỐI SÓNG NFC!\n\n⚡ 1/2: Đang xác thực PACE giải mã thẻ...';
       });
 
       final passport = Passport(nfc);
@@ -228,59 +235,53 @@ class _MainHomeScreenState extends State<MainHomeScreen> {
       bool paceSuccess = false;
       String lastError = "";
 
-      // Thử tất cả tổ hợp DocNum và Ngày hết hạn
+      // Quick-matching PACE loop: Try primary exact candidates first
       outerLoop:
       for (String dNum in docNumCandidates) {
         for (DateTime dtExp in dtExpCandidates) {
           try {
-            debugPrint("Trying PACE with docNum=$dNum, exp=${dtExp.toString()}");
+            debugPrint("PACE attempt with docNum=$dNum, exp=${dtExp.toString()}");
             var accessKey = DBAKey(dNum, dtDob, dtExp, paceMode: true);
             await passport.startSessionPACE(accessKey, cardAccess);
             paceSuccess = true;
-            debugPrint("PACE SUCCESS with docNum=$dNum, exp=${dtExp.toString()}");
+            debugPrint("PACE SUCCESS with docNum=$dNum");
             break outerLoop;
           } catch (e) {
             lastError = e.toString();
-            debugPrint("PACE FAILED with docNum=$dNum, exp=${dtExp.toString()}: $lastError");
+            debugPrint("PACE retry docNum=$dNum: $lastError");
           }
         }
       }
 
       if (!paceSuccess) {
-        throw Exception("Sai thông tin xác thực MRZ.\n$lastError");
+        throw Exception("Sai thông tin xác thực chíp thẻ CCCD.\n$lastError");
       }
 
       setState(() {
-        _nfcStatus = '✅ XÁC THỰC PACE THÀNH CÔNG!\n\n📥 Đang đọc ảnh chân dung (DG2)...';
+        _nfcStatus = '✅ XÁC THỰC PACE THÀNH CÔNG!\n\n⚡ 2/2: Đang đọc & giải mã ảnh chân dung DG2...';
       });
 
       final dg2 = await passport.readEfDG2();
       if (dg2.imageData != null) {
+        HapticFeedback.vibrate();
         setState(() {
           _portraitImageBytes = Uint8List.fromList(dg2.imageData!);
-          _nfcStatus = '🎉 ĐÃ BÓC TÁCH ẢNH CHÂN DUNG THÀNH CÔNG!\n'
-              '📸 Ảnh DG2 từ chíp: ${dg2.imageData!.length} bytes\n'
-              '✅ Quá trình đọc hoàn tất!';
+          _nfcStatus = '🎉 ĐÃ ĐỌC THÀNH CÔNG ẢNH CHÂN DUNG!\n'
+              '📸 Kích thước ảnh DG2: ${dg2.imageData!.length} bytes\n'
+              '✅ Hoàn tất bóc tách dữ liệu NFC!';
         });
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('🎉 THÀNH CÔNG! Đã đọc ảnh chân dung từ chíp NFC.'),
+            content: Text('🎉 THÀNH CÔNG! Đã bóc tách ảnh chân dung từ chíp NFC.'),
             backgroundColor: Colors.green,
             duration: Duration(seconds: 4),
           ));
         }
       } else {
         setState(() {
-          _nfcStatus = '⚠️ Chưa giải mã được ảnh DG2 từ chíp NFC.\n'
-              '👉 Mẹo: Hãy bấm nút "📸 BẮT ĐẦU QUÉT" ở dưới rồi quét mã QR mặt sau thẻ CCCD để tự động mở khóa chíp NFC.';
+          _nfcStatus = '⚠️ Chưa lấy được dữ liệu ảnh DG2 từ chíp NFC.\n'
+              '👉 Mẹo: Bấm nút "📸 BẮT ĐẦU QUÉT" bên dưới để quét lại mã QR mặt sau thẻ CCCD.';
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('💡 Không tìm thấy ảnh trong thẻ NFC.'),
-            backgroundColor: Colors.orange,
-            duration: Duration(seconds: 4),
-          ));
-        }
       }
     } catch (e) {
       String errStr = e.toString().replaceAll("Exception:", "").trim();
